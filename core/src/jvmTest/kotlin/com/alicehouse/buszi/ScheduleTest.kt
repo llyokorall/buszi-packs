@@ -6,6 +6,7 @@ import com.alicehouse.buszi.data.PatternBuilder
 import com.alicehouse.buszi.data.PatternCodec
 import com.alicehouse.buszi.data.ServiceCalendar
 import com.alicehouse.buszi.data.ServiceTime
+import com.alicehouse.buszi.data.dayStart
 import com.alicehouse.buszi.data.StopTimeRow
 import com.alicehouse.buszi.data.mergeDepartures
 import org.junit.Assert.assertEquals
@@ -81,7 +82,7 @@ class ScheduleTest {
     fun calendarWeeklyAndExceptions() {
         val cal = ServiceCalendar()
         val weekdays = BooleanArray(7) { it < 5 }
-        cal.addWeekly("WK", weekdays, LocalDate.of(2026, 11, 9), LocalDate.of(2026, 11, 15)) // Mon..Sun
+        cal.addWeekly("WK", weekdays, kotlinx.datetime.LocalDate(2026, 11, 9), kotlinx.datetime.LocalDate(2026, 11, 15)) // Mon..Sun
         cal.addException("WK", 20261111, 2) // Remembrance Day removed
         cal.addException("HOL", 20261111, 1)
         val got = HashSet<Pair<Int, Int>>()

@@ -1,8 +1,15 @@
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.alicehouse.buszi.data
 
-import java.io.ByteArrayOutputStream
-import java.time.LocalDate
-import java.time.ZoneId
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.isoDayNumber
+import kotlinx.datetime.plus
+import kotlinx.datetime.toInstant
 
 /*
  * Compact static timetable.
@@ -13,7 +20,8 @@ import java.time.ZoneId
  * just (pattern, start time, service). For Edmonton that is ~4.3 k patterns and the whole
  * timetable fits in a few MB instead of ~165 MB.
  *
- * Everything in this file is plain Kotlin (no Android) so it is unit-tested on the JVM.
+ * Everything in this file is Kotlin Multiplatform common code: it runs on Android, the JVM
+ * pack builder and iOS (no java.* APIs here).
  */
 
 /** One upcoming departure of one trip at one stop. */
@@ -40,16 +48,16 @@ object ServiceTime {
     }
 
     /** GTFS reference point: "noon minus 12 h" local time (correct on DST change days). */
-    fun dayStart(date: LocalDate, zone: ZoneId): Long =
-        date.atTime(12, 0).atZone(zone).toEpochSecond() - 12 * 3600
+    fun dayStart(date: LocalDate, zone: TimeZone): Long =
+        LocalDateTime(date, LocalTime(12, 0)).toInstant(zone).epochSeconds - 12 * 3600
 
-    fun dateInt(d: LocalDate): Int = d.year * 10000 + d.monthValue * 100 + d.dayOfMonth
+    fun dateInt(d: LocalDate): Int = d.year * 10000 + (d.month.ordinal + 1) * 100 + d.day
 
     /** "20261111" -> LocalDate, or null. */
     fun parseDate(s: String): LocalDate? {
         val v = s.trim()
         if (v.length != 8) return null
-        return runCatching { LocalDate.of(v.substring(0, 4).toInt(), v.substring(4, 6).toInt(), v.substring(6, 8).toInt()) }.getOrNull()
+        return runCatching { LocalDate(v.substring(0, 4).toInt(), v.substring(4, 6).toInt(), v.substring(6, 8).toInt()) }.getOrNull()
     }
 }
 
@@ -66,9 +74,9 @@ class ServiceCalendar {
         val id = id(serviceId)
         var d = start
         var n = 0
-        while (!d.isAfter(end) && n < MAX_DAYS) {
-            if (days[d.dayOfWeek.value - 1]) dates.getOrPut(id) { HashSet() }.add(ServiceTime.dateInt(d))
-            d = d.plusDays(1)
+        while (d <= end && n < MAX_DAYS) {
+            if (days[d.dayOfWeek.isoDayNumber - 1]) dates.getOrPut(id) { HashSet() }.add(ServiceTime.dateInt(d))
+            d = d.plus(1, DateTimeUnit.DAY)
             n++
         }
     }
@@ -98,7 +106,7 @@ class ServiceCalendar {
  */
 object PatternCodec {
     fun encode(stopRefs: IntArray, offsets: IntArray, board: BooleanArray): ByteArray {
-        val out = ByteArrayOutputStream(stopRefs.size * 4)
+        val out = ByteBuffer(stopRefs.size * 4 + 8)
         var prev = 0
         for (i in stopRefs.indices) {
             writeVarint(out, stopRefs[i])
@@ -107,6 +115,17 @@ object PatternCodec {
             prev += delta
         }
         return out.toByteArray()
+    }
+
+    /** Tiny growable byte buffer (common code has no ByteArrayOutputStream). */
+    private class ByteBuffer(capacity: Int) {
+        private var buf = ByteArray(capacity)
+        private var size = 0
+        fun write(b: Int) {
+            if (size == buf.size) buf = buf.copyOf(buf.size * 2)
+            buf[size++] = b.toByte()
+        }
+        fun toByteArray(): ByteArray = buf.copyOf(size)
     }
 
     inline fun decode(blob: ByteArray, onStop: (stopRef: Int, offset: Int, canBoard: Boolean) -> Unit) {
@@ -122,7 +141,7 @@ object PatternCodec {
         }
     }
 
-    private fun writeVarint(out: ByteArrayOutputStream, value: Int) {
+    private fun writeVarint(out: ByteBuffer, value: Int) {
         var v = value
         while (v and 0x7F.inv() != 0) { out.write((v and 0x7F) or 0x80); v = v ushr 7 }
         out.write(v)
@@ -162,7 +181,7 @@ class PatternBuilder(private val onNewPattern: (Pattern) -> Unit) {
 
         val key = buildString(blob.size + routeId.length + headsign.length + 8) {
             append(routeId).append('\u0001').append(directionId).append('\u0001').append(headsign).append('\u0001')
-            append(String(blob, Charsets.ISO_8859_1))
+            for (byte in blob) append((byte.toInt() and 0xFF).toChar())
         }
         val id = ids.getOrPut(key) {
             val newId = ids.size
