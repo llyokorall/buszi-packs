@@ -1,0 +1,6 @@
+build/
+.gradle/
+.kotlin/
+*.db
+*.db.gz
+out/
