@@ -28,7 +28,8 @@ class GtfsWriter(private val sql: SqlSink, private val log: (String) -> Unit = {
         importStops(zip)
         val calendar = importCalendar(zip)
         val trips = readTrips(zip, calendar).apply { values.removeAll { it.routeId in excludedRoutes } }
-        importStopTimes(zip, trips, progress)
+        val patternShape = importStopTimes(zip, trips, progress)
+        runCatching { importShapes(zip, patternShape) }.onFailure { log("shapes.txt skipped: ${it.message}") }
         val sd = sql.prepare("INSERT OR IGNORE INTO service_dates VALUES(?, ?)")
         calendar.forEach { date, service -> sd.bind(1, date.toLong()); sd.bind(2, service.toLong()); sd.insert() }
         val m = sql.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)")
@@ -109,23 +110,25 @@ class GtfsWriter(private val sql: SqlSink, private val log: (String) -> Unit = {
         return cal
     }
 
-    private class TripRow(val routeId: String, val directionId: Int, val headsign: String, val service: Int)
+    private class TripRow(val routeId: String, val directionId: Int, val headsign: String, val service: Int, val shapeId: String)
 
     /** trips.txt kept in memory only during the import; strings are shared to save RAM. */
     private fun readTrips(zip: ZipFile, calendar: ServiceCalendar): HashMap<String, TripRow> {
         val t = table(zip, "trips.txt") ?: error("trips.txt missing")
         val id = t.col("trip_id"); val rid = t.col("route_id"); val hs = t.col("trip_headsign")
-        val dir = t.col("direction_id"); val sid = t.col("service_id")
+        val dir = t.col("direction_id"); val sid = t.col("service_id"); val shp = t.col("shape_id")
         val pool = HashMap<String, String>()
         fun share(s: String) = pool.getOrPut(s) { s }
         val out = HashMap<String, TripRow>(100_000)
         t.forEachRow { r ->
-            out[r.at(id)] = TripRow(share(r.at(rid)), r.at(dir).toIntOrNull() ?: 0, share(r.at(hs)), calendar.id(r.at(sid)))
+            out[r.at(id)] = TripRow(share(r.at(rid)), r.at(dir).toIntOrNull() ?: 0, share(r.at(hs)), calendar.id(r.at(sid)), share(r.at(shp)))
         }
         return out
     }
 
-    private fun importStopTimes(zip: ZipFile, trips: HashMap<String, TripRow>, progress: (Float) -> Unit) {
+    /** Returns pattern -> shape_id (of the pattern's first trip that has one). */
+    private fun importStopTimes(zip: ZipFile, trips: HashMap<String, TripRow>, progress: (Float) -> Unit): Map<Int, String> {
+        val patternShape = HashMap<Int, String>()
         val stopRef = HashMap<String, Int>()
         sql.pairs("SELECT stop_id, rowid FROM stops").forEach { (id, ref) -> stopRef[id] = ref }
 
@@ -142,6 +145,7 @@ class GtfsWriter(private val sql: SqlSink, private val log: (String) -> Unit = {
             val timing = builder.addTrip(trip.routeId, trip.directionId, trip.headsign, rows)
             insTrip.bind(1, timing.pattern.toLong()); insTrip.bind(2, timing.start.toLong())
             insTrip.bind(3, tripId); insTrip.bind(4, trip.service.toLong()); insTrip.insert()
+            if (trip.shapeId.isNotEmpty() && rows.isNotEmpty()) patternShape.putIfAbsent(timing.pattern, trip.shapeId)
             done.add(tripId)
         }
 
@@ -159,7 +163,10 @@ class GtfsWriter(private val sql: SqlSink, private val log: (String) -> Unit = {
                     }
             }
         }
-        var skipped = 0
+        // Most feeds list each trip's rows together, but some (e.g. BC Transit Nanaimo, ~3 % of trips)
+        // split a trip into separate runs. Those trips are found first and kept until the end.
+        val split = splitTrips(zip)
+        val held = HashMap<String, MutableList<StopTimeRow>>()
         table(zip, "stop_times.txt", counting)?.let { t ->
             val tid = t.col("trip_id"); val seq = t.col("stop_sequence"); val sid = t.col("stop_id")
             val dep = t.col("departure_time"); val arr = t.col("arrival_time"); val pu = t.col("pickup_type")
@@ -167,23 +174,82 @@ class GtfsWriter(private val sql: SqlSink, private val log: (String) -> Unit = {
             val rows = ArrayList<StopTimeRow>(64)
             t.forEachRow { r ->
                 val tripId = r.at(tid)
+                val d = ServiceTime.parse(r.at(dep)).let { if (it >= 0) it else ServiceTime.parse(r.at(arr)) }
+                val row = StopTimeRow(r.at(seq).toIntOrNull() ?: rows.size, stopRef[r.at(sid)] ?: -1, d, r.at(pu) == "1")
+                if (tripId in split) { held.getOrPut(tripId) { ArrayList() }.add(row); return@forEachRow }
                 if (tripId != cur) {
                     cur?.let { saveTrip(it, rows) }
                     rows.clear()
                     cur = tripId
                 }
-                // Feeds are grouped by trip in practice; rows of an already finished trip are ignored.
-                if (tripId in done) { skipped++; return@forEachRow }
-                val d = ServiceTime.parse(r.at(dep)).let { if (it >= 0) it else ServiceTime.parse(r.at(arr)) }
-                rows.add(StopTimeRow(r.at(seq).toIntOrNull() ?: rows.size, stopRef[r.at(sid)] ?: -1, d, r.at(pu) == "1"))
+                rows.add(row)
             }
             cur?.let { saveTrip(it, rows) }
         }
-        if (skipped > 0) log("stop_times.txt not grouped by trip: $skipped rows ignored")
+        held.forEach { (tripId, rows) -> saveTrip(tripId, rows) }
+        if (split.isNotEmpty()) log("stop_times.txt: ${split.size} trips not listed in one block, joined")
 
         // Trips without stop times still need route/direction for real-time matching.
         for (tripId in trips.keys) if (tripId !in done) saveTrip(tripId, ArrayList())
         log("Imported ${trips.size} trips as ${builder.count} patterns")
+        return patternShape
+    }
+
+    /** Trips whose stop_times rows are not all in one block (reads only the trip_id column). */
+    private fun splitTrips(zip: ZipFile): Set<String> {
+        val t = table(zip, "stop_times.txt") ?: return emptySet()
+        val tid = t.col("trip_id")
+        val seen = HashSet<String>()
+        val split = HashSet<String>()
+        var cur: String? = null
+        t.forEachRow { r ->
+            val id = r.at(tid)
+            if (id == cur) return@forEachRow
+            cur = id
+            if (!seen.add(id)) split.add(id)
+        }
+        return split
+    }
+
+    /** Growable point list of one shape (primitive arrays: big feeds have a million shape points). */
+    private class ShapePts {
+        var n = 0
+        var seq = IntArray(64); var lat = DoubleArray(64); var lon = DoubleArray(64)
+        fun add(s: Int, la: Double, lo: Double) {
+            if (n == seq.size) { seq = seq.copyOf(n * 2); lat = lat.copyOf(n * 2); lon = lon.copyOf(n * 2) }
+            seq[n] = s; lat[n] = la; lon[n] = lo; n++
+        }
+    }
+
+    /** Stores the simplified shape of every pattern that has one. */
+    private fun importShapes(zip: ZipFile, patternShape: Map<Int, String>) {
+        if (patternShape.isEmpty()) return
+        val t = table(zip, "shapes.txt") ?: return
+        val wanted = patternShape.values.toHashSet()
+        val id = t.col("shape_id"); val la = t.col("shape_pt_lat"); val lo = t.col("shape_pt_lon"); val sq = t.col("shape_pt_sequence")
+        val shapes = HashMap<String, ShapePts>()
+        t.forEachRow { r ->
+            val sid = r.at(id)
+            if (sid !in wanted) return@forEachRow
+            val a = r.at(la).toDoubleOrNull() ?: return@forEachRow
+            val o = r.at(lo).toDoubleOrNull() ?: return@forEachRow
+            shapes.getOrPut(sid) { ShapePts() }.add(r.at(sq).toIntOrNull() ?: 0, a, o)
+        }
+        val blobs = HashMap<String, ByteArray>()
+        for ((sid, p) in shapes) {
+            val order = (0 until p.n).sortedBy { p.seq[it] }
+            val lat = DoubleArray(order.size) { p.lat[order[it]] }
+            val lon = DoubleArray(order.size) { p.lon[order[it]] }
+            val keep = ShapeCodec.simplify(lat, lon)
+            blobs[sid] = ShapeCodec.encode(DoubleArray(keep.size) { lat[keep[it]] }, DoubleArray(keep.size) { lon[keep[it]] })
+        }
+        val ins = sql.prepare("INSERT OR REPLACE INTO shapes VALUES(?, ?)")
+        var stored = 0
+        for ((pattern, sid) in patternShape) {
+            val b = blobs[sid] ?: continue
+            ins.bind(1, pattern.toLong()); ins.bind(2, b); ins.insert(); stored++
+        }
+        log("Stored shapes for $stored of ${patternShape.size} patterns (${blobs.values.sumOf { it.size } / 1024} kB)")
     }
 
     private fun importFeedInfo(zip: ZipFile, put: (String, String) -> Unit) {
