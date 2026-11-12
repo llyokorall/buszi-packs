@@ -119,6 +119,60 @@ fun describePoint(tiles: List<StreetTile>, lat: Double, lon: Double): Pair<Strin
     }
 }
 
+/** Lower case, no accents, letters and digits only: "Best Buy", "bestbuy" and "BEST-BUY" all match. */
+fun searchKey(s: String): String {
+    val sb = StringBuilder(s.length)
+    for (c in s.lowercase()) {
+        val plain = when (c) {
+            'à', 'á', 'â', 'ä', 'ã', 'å' -> 'a'; 'ç' -> 'c'; 'è', 'é', 'ê', 'ë' -> 'e'; 'ì', 'í', 'î', 'ï' -> 'i'
+            'ñ' -> 'n'; 'ò', 'ó', 'ô', 'ö', 'õ' -> 'o'; 'ù', 'ú', 'û', 'ü' -> 'u'; 'ÿ', 'ý' -> 'y'; 'œ' -> 'o'
+            else -> c
+        }
+        if (plain.isLetterOrDigit()) sb.append(plain)
+    }
+    return sb.toString()
+}
+
+/**
+ * Shops and places from map tiles whose name matches [query] (see [searchKey]), best first: names
+ * that start with the query, then names containing it, each nearest to ([lat], [lon]) first. The
+ * same name repeated within 150 m (one shop drawn twice) counts once. Works offline from the tiles.
+ */
+fun searchPois(tiles: List<StreetTile>, query: String, lat: Double, lon: Double, max: Int = 8): List<NamedPoint> {
+    val q = searchKey(query)
+    if (q.length < 3) return emptyList()
+    val hits = ArrayList<Triple<NamedPoint, Int, Double>>()
+    for (t in tiles) for (p in t.points) {
+        if (!p.isPoi) continue
+        val k = searchKey(p.name)
+        val rank = when {
+            k.startsWith(q) -> 0
+            k.contains(q) -> 1
+            else -> continue
+        }
+        hits.add(Triple(p, rank, Walking.meters(lat, lon, p.lat, p.lon)))
+    }
+    val out = ArrayList<NamedPoint>()
+    for ((p, _, _) in hits.sortedWith(compareBy({ it.second }, { it.third }))) {
+        if (out.any { it.name == p.name && Walking.meters(it.lat, it.lon, p.lat, p.lon) < 150 }) continue
+        out.add(p)
+        if (out.size >= max) break
+    }
+    return out
+}
+
+/** Nearest named street to a point (within [maxM] metres), from tile labels. */
+fun nearestStreetName(tiles: List<StreetTile>, lat: Double, lon: Double, maxM: Double = 80.0): String? {
+    var best: String? = null; var bestD = maxM
+    for (t in tiles) for (l in t.names) {
+        for (i in 0 until l.lat.size - 1) {
+            val d = pointSegmentMeters(lat, lon, l.lat[i], l.lon[i], l.lat[i + 1], l.lon[i + 1])
+            if (d < bestD) { bestD = d; best = l.name }
+        }
+    }
+    return best
+}
+
 private fun pointSegmentMeters(la: Double, lo: Double, la1: Double, lo1: Double, la2: Double, lo2: Double): Double {
     val k = cos(la * PI / 180)
     val ax = lo1 * k; val ay = la1; val bx = lo2 * k; val by = la2; val px = lo * k

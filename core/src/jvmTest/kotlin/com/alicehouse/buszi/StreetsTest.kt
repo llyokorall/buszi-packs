@@ -211,3 +211,44 @@ class SeattleWalkTest {
         }
     }
 }
+
+class PoiSearchTest {
+    private fun tile(vararg pts: com.alicehouse.buszi.data.NamedPoint) =
+        com.alicehouse.buszi.data.StreetTile(emptyList(), emptyList(), pts.toList(), emptyList())
+
+    @Test
+    fun matchesIgnoringSpacesCaseAndAccents() {
+        assertEquals("bestbuy", com.alicehouse.buszi.data.searchKey("Best Buy"))
+        assertEquals("cafemontreal", com.alicehouse.buszi.data.searchKey("Café Montréal!"))
+        val t = tile(
+            com.alicehouse.buszi.data.NamedPoint(49.2366, -124.0490, "Best Buy", true),
+            com.alicehouse.buszi.data.NamedPoint(49.2367, -124.0491, "Best Buy", true), // same shop drawn twice
+            com.alicehouse.buszi.data.NamedPoint(49.1660, -123.9400, "The Best Buy Liquor", true),
+            com.alicehouse.buszi.data.NamedPoint(49.1660, -123.9401, "12", false), // house number, never a result
+        )
+        val r = com.alicehouse.buszi.data.searchPois(listOf(t), "bestbuy", 49.1659, -123.9401)
+        assertEquals(listOf("Best Buy", "The Best Buy Liquor"), r.map { it.name }) // starts-with first, duplicate dropped
+        assertTrue(com.alicehouse.buszi.data.searchPois(listOf(t), "be", 49.0, -123.0).isEmpty()) // too short
+    }
+
+    /** Network check (BUSZI_NET=1): "bestbuy" near Woodgrove Centre, Nanaimo, from real z14 tiles. */
+    @Test
+    fun findsBestBuyInNanaimoTiles() {
+        if (System.getenv("BUSZI_NET") != "1") return
+        fun get(u: String): ByteArray {
+            val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+            c.setRequestProperty("Accept-Encoding", "gzip")
+            val raw = c.inputStream.readBytes()
+            return if (c.contentEncoding == "gzip") java.util.zip.GZIPInputStream(raw.inputStream()).readBytes() else raw
+        }
+        val tpl = Regex("\"tiles\":\\[\"([^\"]+)\"").find(get("https://tiles.openfreemap.org/planet").decodeToString())!!.groupValues[1]
+        val here = 49.2330 to -124.0480 // Metral Dr near Woodgrove; Best Buy is ~4 km away on Rutherford Rd
+        val keys = Tiles.around(here.first, here.second, here.first, here.second, 5_000.0)
+        val tiles = keys.map { (x, y) ->
+            com.alicehouse.buszi.data.MvtStreets.decodeTile(get(tpl.replace("{z}", "14").replace("{x}", "$x").replace("{y}", "$y")), 14, x, y)
+        }
+        val r = com.alicehouse.buszi.data.searchPois(tiles, "bestbuy", here.first, here.second)
+        println("tiles=${keys.size} pois=${tiles.sumOf { t -> t.points.count { it.isPoi } }} found=${r.map { "${it.name} ${it.lat},${it.lon}" }}")
+        assertTrue(r.any { it.name.contains("Best Buy", ignoreCase = true) })
+    }
+}
