@@ -359,11 +359,13 @@ object Regions {
             bbox = b(43.774, -79.259, 44.436, -78.580), core = b(43.809, -79.163, 44.260, -78.668),
             staticGtfsUrl = "https://maps.durham.ca/OpenDataGTFS/GTFS_Durham_TXT.zip",
             tripUpdatesUrl = null, vehiclePositionsUrl = null, alertsUrl = null,
-            dataCredit = "Contains public sector Information made available under The Regional Municipality of Durham's Open Data Licence.",
-            dataTermsLabel = "Region of Durham Open Data Licence",
-            dataTermsUrl = "https://www.durham.ca/en/regional-government/resources/Documents/OpenDataLicenceAgreement.pdf",
+            dataCredit = "Contains public sector information made available under The Regional Municipality of Durham's Open Data Licence.",
+            dataTermsLabel = "Region of Durham Open Data Licence v.1.0",
+            // The old PDF (…/Documents/OpenDataLicenceAgreement.pdf) is gone (404, 2026-11-12); the text is on this page.
+            dataTermsUrl = "https://www.durham.ca/regional-government/access-to-information/open-data/#RegionofDurham-OpenDataLicencev.1.0",
             disclaimer = indep("the Regional Municipality of Durham or Durham Region Transit"),
-            shortCredit = "Contains public sector Information made available under The Regional Municipality of Durham's Open Data Licence.",
+            shortCredit = "Contains public sector information made available under The Regional Municipality of Durham's Open Data Licence.",
+            packAllowed = true, // "Adapt the information. Use the information commercially…"
         ),
         Region(
             id = "london-ltc", displayName = "London (LTC)", area = "ON", country = "CA", timeZone = "America/Toronto",
