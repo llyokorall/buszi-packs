@@ -56,7 +56,7 @@ data class RtFeed(
     val alerts: List<RtAlert> = emptyList(),
 )
 
-private class Pb(private val b: ByteArray, var pos: Int, private val end: Int) {
+internal class Pb(private val b: ByteArray, var pos: Int, private val end: Int) {
     fun more() = pos < end
 
     fun varint(): Long {

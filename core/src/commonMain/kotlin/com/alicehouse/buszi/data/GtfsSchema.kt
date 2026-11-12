@@ -6,7 +6,10 @@ package com.alicehouse.buszi.data
  */
 object GtfsSchema {
     /** Bump when the layout changes: old files and packs are then rebuilt. */
-    const val VERSION = 3
+    const val VERSION = 4
+
+    /** Added in version 4: the road each pattern's buses take ([ShapeCodec]); empty when the feed has no shapes. */
+    const val CREATE_SHAPES = "CREATE TABLE IF NOT EXISTS shapes(pattern INTEGER PRIMARY KEY, points BLOB)"
 
     val CREATE = listOf(
         "CREATE TABLE agency(agency_id TEXT PRIMARY KEY, name TEXT, url TEXT, tz TEXT)",
@@ -22,9 +25,10 @@ object GtfsSchema {
         "CREATE INDEX trips_id ON trips(trip_id)",
         "CREATE TABLE service_dates(date INTEGER, service INTEGER, PRIMARY KEY(date, service)) WITHOUT ROWID",
         "CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)",
+        CREATE_SHAPES,
     )
 
-    val TABLES = listOf("agency", "routes", "stops", "patterns", "trips", "service_dates", "meta")
+    val TABLES = listOf("agency", "routes", "stops", "patterns", "trips", "service_dates", "meta", "shapes")
 }
 
 /** Minimal SQL access so the same import code can run on Android SQLite, JDBC and iOS SQLite. */
