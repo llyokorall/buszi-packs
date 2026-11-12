@@ -105,6 +105,74 @@ object ShapeCodec {
     }
 
     /**
+     * The road around a live bus: the piece of [shape] from [backM] metres behind the point nearest
+     * ([lat], [lon]) to [aheadM] metres ahead, in travel order, plus how far into that piece the bus
+     * is. Null when the bus is more than [maxOffM] from the shape (wrong trip or detour).
+     */
+    fun around(
+        shape: List<Pair<Double, Double>>, lat: Double, lon: Double,
+        backM: Double, aheadM: Double, maxOffM: Double = 80.0,
+    ): Pair<List<Pair<Double, Double>>, Double>? {
+        if (shape.size < 2) return null
+        // nearest point over the whole shape
+        val kx = 111_320.0 * cos(lat * kotlin.math.PI / 180); val ky = 110_540.0
+        var bestSeg = -1; var bestT = 0.0; var bestD = Double.MAX_VALUE
+        for (s in 0 until shape.size - 1) {
+            val ax = shape[s].second * kx; val ay = shape[s].first * ky
+            val bx = shape[s + 1].second * kx; val by = shape[s + 1].first * ky
+            val dx = bx - ax; val dy = by - ay; val len2 = dx * dx + dy * dy
+            val px = lon * kx; val py = lat * ky
+            val t = if (len2 == 0.0) 0.0 else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
+            val x = ax + t * dx - px; val y = ay + t * dy - py
+            val d = sqrt(x * x + y * y)
+            if (d < bestD) { bestD = d; bestSeg = s; bestT = t }
+        }
+        if (bestD > maxOffM) return null
+        val cum = DoubleArray(shape.size)
+        for (i in 1 until shape.size) cum[i] = cum[i - 1] + Walking.meters(shape[i - 1].first, shape[i - 1].second, shape[i].first, shape[i].second)
+        val at = cum[bestSeg] + (cum[bestSeg + 1] - cum[bestSeg]) * bestT
+        val from = (at - backM).coerceAtLeast(0.0)
+        val to = (at + aheadM).coerceAtMost(cum.last())
+        return slice(shape, cum, from, to) to (at - from)
+    }
+
+    /** The piece of a polyline between two distances along it. */
+    private fun slice(pts: List<Pair<Double, Double>>, cum: DoubleArray, from: Double, to: Double): List<Pair<Double, Double>> {
+        fun pointAt(m: Double): Pair<Double, Double> {
+            var i = 0
+            while (i < cum.size - 2 && cum[i + 1] < m) i++
+            val seg = cum[i + 1] - cum[i]
+            val t = if (seg <= 0.0) 0.0 else ((m - cum[i]) / seg).coerceIn(0.0, 1.0)
+            return (pts[i].first + (pts[i + 1].first - pts[i].first) * t) to (pts[i].second + (pts[i + 1].second - pts[i].second) * t)
+        }
+        val out = ArrayList<Pair<Double, Double>>()
+        out.add(pointAt(from))
+        for (i in cum.indices) if (cum[i] > from && cum[i] < to) out.add(pts[i])
+        out.add(pointAt(to))
+        return out
+    }
+
+    /** Length of a polyline in metres. */
+    fun length(pts: List<Pair<Double, Double>>): Double =
+        pts.zipWithNext().sumOf { (a, b) -> Walking.meters(a.first, a.second, b.first, b.second) }
+
+    /** The piece of [pts] between [fromM] and [toM] metres along it. */
+    fun between(pts: List<Pair<Double, Double>>, fromM: Double, toM: Double): List<Pair<Double, Double>> {
+        if (pts.size < 2) return pts
+        val cum = DoubleArray(pts.size)
+        for (i in 1 until pts.size) cum[i] = cum[i - 1] + Walking.meters(pts[i - 1].first, pts[i - 1].second, pts[i].first, pts[i].second)
+        val a = fromM.coerceIn(0.0, cum.last()); val b = toM.coerceIn(a, cum.last())
+        return slice(pts, cum, a, b)
+    }
+
+    /** Compass bearing (degrees clockwise from north) from [a] to [b]. */
+    fun bearing(a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
+        val k = cos(a.first * kotlin.math.PI / 180)
+        val deg = kotlin.math.atan2((b.second - a.second) * k, b.first - a.first) * 180 / kotlin.math.PI
+        return (deg + 360) % 360
+    }
+
+    /**
      * The part of [shape] between two stops, in travel order: from the point closest to the
      * first stop to the point closest to the last one after it. Every stop in [stops] is matched in
      * order, so a route passing the same place twice (loops) follows the right pass. Null when a

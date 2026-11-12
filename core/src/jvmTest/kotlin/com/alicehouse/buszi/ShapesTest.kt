@@ -52,6 +52,22 @@ class ShapesTest {
     }
 
     @Test
+    fun roadAroundABusFollowsTheCorner() {
+        // Bus 50 m after the corner of the L-shaped road (north, then east).
+        val bus = 49.009 to -122.99931 // ~50 m east of the corner
+        val (road, at) = ShapeCodec.around(road, bus.first, bus.second, backM = 150.0, aheadM = 80.0)!!
+        assertTrue(road.any { it == 49.009 to -123.0 }, "the body bends round the corner")
+        assertEquals(150.0, at, 2.0)
+        assertEquals(230.0, ShapeCodec.length(road), 3.0)
+        // Ahead of the bus the road runs east (~90°); behind the corner it ran north (~0°).
+        val ahead = ShapeCodec.between(road, at, at + 40)
+        assertEquals(90.0, ShapeCodec.bearing(ahead.first(), ahead.last()), 2.0)
+        val tail = ShapeCodec.between(road, 0.0, 60.0)
+        assertEquals(0.0, ShapeCodec.bearing(tail.first(), tail.last()), 2.0)
+        assertNull(ShapeCodec.around(this.road, 49.2, -123.2, 100.0, 50.0)) // far from the line
+    }
+
+    @Test
     fun noPathWhenStopsAreFarFromTheShape() {
         assertNull(ShapeCodec.slice(road, listOf(49.004 to -123.0, 49.5 to -123.5)))
     }
