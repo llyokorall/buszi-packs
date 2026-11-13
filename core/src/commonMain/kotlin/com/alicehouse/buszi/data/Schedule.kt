@@ -30,7 +30,33 @@ data class Departure(
     val stopId: String,
     val epochSec: Long,
     val realtime: Boolean,
+    /** How full the bus is, as [Crowding.level] (0 = unknown, 1 seats, 2 few seats, 3 standing/full). */
+    val crowding: Int = 0,
 )
+
+/** GTFS-RT OccupancyStatus in three steps a rider cares about. */
+object Crowding {
+    /**
+     * EMPTY (0) counts as unknown: several feeds send it for every bus that has no passenger
+     * counter (Seattle sent it for 2/3 of its fleet), so it would wrongly say "plenty of seats".
+     */
+    fun level(occupancy: Int): Int = when (occupancy) {
+        1 -> 1
+        2 -> 2
+        3, 4, 5, 6 -> 3
+        else -> 0
+    }
+
+    /**
+     * Whether a feed's occupancy is real data: at least two different levels across its buses.
+     * A feed that gives every bus the same value (Halifax: all "many seats") is a default, not a count.
+     */
+    fun trusted(occupancies: List<Int>): Boolean = occupancies.map(::level).filter { it > 0 }.toSet().size >= 2
+
+    /** [level] of each vehicle, or 0 for all of them when the feed's numbers can't be trusted ([trusted]). */
+    fun levels(occupancies: List<Int>): List<Int> =
+        if (trusted(occupancies)) occupancies.map(::level) else List(occupancies.size) { 0 }
+}
 
 /** GTFS time helpers. Times are seconds after the start of the "service day" and may pass 24:00. */
 object ServiceTime {

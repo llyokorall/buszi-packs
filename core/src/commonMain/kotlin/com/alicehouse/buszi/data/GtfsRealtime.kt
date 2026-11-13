@@ -34,6 +34,8 @@ data class RtVehicle(
     val lon: Float,
     val bearing: Float,
     val label: String,
+    /** GTFS-RT OccupancyStatus (0 empty … 6 not accepting passengers); -1 when the feed doesn't say. */
+    val occupancy: Int = -1,
 )
 
 data class RtAlert(
@@ -56,7 +58,7 @@ data class RtFeed(
     val alerts: List<RtAlert> = emptyList(),
 )
 
-private class Pb(private val b: ByteArray, var pos: Int, private val end: Int) {
+internal class Pb(private val b: ByteArray, var pos: Int, private val end: Int) {
     fun more() = pos < end
 
     fun varint(): Long {
@@ -234,6 +236,7 @@ object GtfsRealtimeParser {
         var lon = Float.NaN
         var bearing = Float.NaN
         var label = ""
+        var occupancy = -1
         while (p.more()) {
             val t = p.tag()
             val wire = t and 7
@@ -258,11 +261,12 @@ object GtfsRealtimeParser {
                         if (vt ushr 3 == 2 && vt and 7 == 2) label = vd.string() else vd.skip(vt and 7)
                     }
                 } else p.skip(wire)
+                9 -> if (wire == 0) occupancy = p.varint().toInt() else p.skip(wire)
                 else -> p.skip(wire)
             }
         }
         if (lat.isNaN() || lon.isNaN()) return null
-        return RtVehicle(desc.tripId, desc.routeId, lat, lon, bearing, label)
+        return RtVehicle(desc.tripId, desc.routeId, lat, lon, bearing, label, occupancy)
     }
 
     private fun alert(p: Pb, id: String): RtAlert {

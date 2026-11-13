@@ -6,7 +6,19 @@ package com.alicehouse.buszi.data
  */
 object GtfsSchema {
     /** Bump when the layout changes: old files and packs are then rebuilt. */
-    const val VERSION = 3
+    const val VERSION = 5
+
+    /** Added in version 4: the road each pattern's buses take ([ShapeCodec]); empty when the feed has no shapes. */
+    const val CREATE_SHAPES = "CREATE TABLE IF NOT EXISTS shapes(pattern INTEGER PRIMARY KEY, points BLOB)"
+
+    /**
+     * Added in version 5: GTFS block_id of each trip that has one. Trips of one block are run by the
+     * same vehicle one after another ("this bus continues as route 1 → Woodgrove").
+     */
+    val CREATE_BLOCKS = listOf(
+        "CREATE TABLE IF NOT EXISTS blocks(trip_id TEXT PRIMARY KEY, block TEXT) WITHOUT ROWID",
+        "CREATE INDEX IF NOT EXISTS blocks_block ON blocks(block)",
+    )
 
     val CREATE = listOf(
         "CREATE TABLE agency(agency_id TEXT PRIMARY KEY, name TEXT, url TEXT, tz TEXT)",
@@ -22,9 +34,10 @@ object GtfsSchema {
         "CREATE INDEX trips_id ON trips(trip_id)",
         "CREATE TABLE service_dates(date INTEGER, service INTEGER, PRIMARY KEY(date, service)) WITHOUT ROWID",
         "CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT)",
-    )
+        CREATE_SHAPES,
+    ) + CREATE_BLOCKS
 
-    val TABLES = listOf("agency", "routes", "stops", "patterns", "trips", "service_dates", "meta")
+    val TABLES = listOf("agency", "routes", "stops", "patterns", "trips", "service_dates", "meta", "shapes", "blocks")
 }
 
 /** Minimal SQL access so the same import code can run on Android SQLite, JDBC and iOS SQLite. */
